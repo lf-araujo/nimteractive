@@ -283,6 +283,19 @@ With prefix arg, prompt for the session name."
     (remhash (or session "default") ob-nimteractive--sessions)))
 
 ;;; ---------------------------------------------------------------------------
+;;; org-edit-src integration: show session alongside the edit buffer
+
+(defun org-babel-edit-prep:nim (info)
+  "Called by org when entering the zoom-in edit buffer for a nim block.
+INFO is the src block info list (lang body params).
+Ensures the session is running and displays it in a side window,
+mirroring the ESS ess-switch-to-inferior-or-script-buffer pattern."
+  (let* ((params (nth 2 info))
+         (session (or (cdr (assq :session params)) "default")))
+    (ob-nimteractive--ensure-session session)
+    (display-buffer (ob-nimteractive--buffer-name session))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Setup
 
 ;;;###autoload
@@ -292,13 +305,22 @@ With prefix arg, prompt for the session name."
 Avoids going through `org-babel-do-load-languages' because that
 calls (require 'ob-nim) which would fail — our file is ob-nimteractive.
 Instead we register the execute function directly and add nim to the
-load-languages list so org-babel doesn't warn about an unknown language."
-  ;; Mark nim as loaded so org-babel-do-load-languages won't try to
-  ;; (require 'ob-nim) later if the user calls it themselves.
+load-languages list so org-babel doesn't warn about an unknown language.
+
+Also installs a display-buffer-alist rule to show *Nimteractive:* buffers
+in a bottom side window, matching the ESS *R:* layout."
   (provide 'ob-nim)
   (setq org-babel-load-languages
         (cons '(nim . t)
-              (assq-delete-all 'nim org-babel-load-languages))))
+              (assq-delete-all 'nim org-babel-load-languages)))
+  ;; Pin all *Nimteractive:* buffers to the bottom side window.
+  ;; Users can override this entry in their own display-buffer-alist.
+  (add-to-list 'display-buffer-alist
+               '("^\\*Nimteractive:"
+                 (display-buffer-in-side-window)
+                 (side . bottom)
+                 (slot . 0)
+                 (window-height . 0.3))))
 
 (with-eval-after-load 'org
   (define-key org-mode-map (kbd "C-c C-v z")
