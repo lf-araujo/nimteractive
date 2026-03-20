@@ -141,9 +141,12 @@
                              0 (match-beginning 0))))
         (setq ob-nimteractive--pending-output
               (substring ob-nimteractive--pending-output (match-end 0)))
+        ;; Strip the prompt prefix if it appears before the JSON
+        (when (string-prefix-p ob-nimteractive-prompt line)
+          (setq line (substring line (length ob-nimteractive-prompt))))
         (if (and (> (length line) 0) (eq (aref line 0) ?{))
             ;; Looks like JSON — parse and convert to display text
-            (condition-case err
+            (condition-case _err
                 (let ((resp (json-parse-string line :object-type 'alist)))
                   (setq ob-nimteractive--last-response resp)
                   (when (equal ob-nimteractive--awaiting-id
@@ -154,7 +157,7 @@
                                 (ob-nimteractive--resp-to-display resp))))
               (error
                (setq display (concat display line "\n"))))
-          ;; Not JSON (e.g. the prompt "nim> ") — pass through
+          ;; Not JSON (e.g. the bare prompt "nim> ") — pass through as-is
           (setq display (concat display line "\n")))))
     display))
 
