@@ -1,34 +1,98 @@
-## VM session: holds the interpreter, evaluates code blocks.
+## VM session: persistent Interpreter with growing script buffer.
+##
+## State is accumulated by replaying an ever-growing script on each eval.
+## Imported modules are cached in the module graph, so only the incremental
+## AST-walk cost is paid after the first import.
+##
+## Buffer structure:
+##   [imports]  <- from :precompile chunk, never cleared
+##   [procs]    <- from most recent :procs chunk, replaced on reload
+##   [history]  <- eval blocks appended sequentially
 
-import std/[os, strutils]
-import compiler/[nimeval, llstream, idents, options, condsyms]
+import compiler/[nimeval, llstream]
+import std/[os, posix, strutils]
 
 type
-  Session* = object
+  Session* = ref object
     intr*: Interpreter
-    stdlibPath*: string
+    searchPaths: seq[string]
+    imports: string   ## precompile chunk content
+    procs: string     ## most recent procs chunk content
+    history: string   ## accumulated eval blocks
 
 var gSession*: Session
 
-proc findStdlib(): string =
-  ## Locate the Nim stdlib at compile time.
+proc nimStdlibPath*(): string =
+  ## Runtime stdlib path from `nim dump`.
+  ## Falls back to compile-time querySetting if dump fails.
   result = findNimStdLibCompileTime()
 
-proc initSession*(extraPaths: seq[string] = @[]) =
-  let stdlib = findStdlib()
-  var paths = @[stdlib] & extraPaths
-  gSession.stdlibPath = stdlib
-  gSession.intr = createInterpreter("session.nims", paths)
+proc newSession*(extraPaths: seq[string] = @[]): Session =
+  result = Session()
+  let stdlib = nimStdlibPath()
+  result.searchPaths = @[stdlib, stdlib / "pure", stdlib / "core"] & extraPaths
+  result.intr = createInterpreter("session.nims", result.searchPaths)
 
-proc evalBlock*(code: string): tuple[value: string, stdout: string, err: string] =
-  ## Evaluate a code block in the persistent VM.
-  ## stdout capture is best-effort via a wrapper; full dup2 capture is TODO.
+proc initGlobalSession*(extraPaths: seq[string] = @[]) =
+  gSession = newSession(extraPaths)
+
+proc fullScript(s: Session): string =
+  result = s.imports
+  if s.procs != "": result &= "\n" & s.procs
+  if s.history != "": result &= "\n" & s.history
+
+proc evalRaw(s: Session, script: string): tuple[stdout: string, err: string] =
+  ## Eval script with stdout captured via dup2. Returns captured output and
+  ## any error message.
+  var pipefd: array[2, cint]
+  if pipe(pipefd) != 0:
+    return ("", "pipe() failed")
+
+  let savedOut = dup(STDOUT_FILENO)
+  discard dup2(pipefd[1], STDOUT_FILENO)
+  discard close(pipefd[1])
+
+  var evalErr = ""
   try:
-    gSession.intr.evalScript(llStreamOpen(code))
-    result = (value: "", stdout: "", err: "")
+    s.intr.evalScript(llStreamOpen(script))
   except:
-    result = (value: "", stdout: "", err: getCurrentExceptionMsg())
+    evalErr = getCurrentExceptionMsg()
 
-proc destroySession*() =
-  if gSession.intr != nil:
-    destroyInterpreter(gSession.intr)
+  stdout.flushFile()
+  discard dup2(savedOut, STDOUT_FILENO)
+  discard close(savedOut)
+
+  var buf = newString(65536)
+  let n = read(pipefd[0], addr buf[0], 65536)
+  discard close(pipefd[0])
+
+  let captured = if n > 0: buf[0..<n] else: ""
+  result = (captured.strip(leading = false), evalErr)
+
+proc setImports*(s: Session; code: string): tuple[stdout: string, err: string] =
+  ## Called by :precompile chunk. Replaces the imports section and warms up
+  ## the module graph. Clears procs and history (fresh start after import change).
+  s.imports = code
+  s.procs = ""
+  s.history = ""
+  result = s.evalRaw(s.imports)
+
+proc setProcs*(s: Session; code: string): tuple[stdout: string, err: string] =
+  ## Called by :procs chunk. Replaces the procs section and clears history.
+  ## Imports are kept; module graph stays warm.
+  s.procs = code
+  s.history = ""
+  let script = s.imports & "\n" & s.procs
+  result = s.evalRaw(script)
+
+proc evalBlock*(s: Session; code: string): tuple[stdout: string, err: string] =
+  ## Regular eval: append to history and replay the full script.
+  s.history &= "\n" & code
+  result = s.evalRaw(s.fullScript())
+
+proc resetSession*(s: Session) =
+  ## Restart the interpreter entirely (clears module graph too).
+  s.intr = createInterpreter("session.nims", s.searchPaths)
+  s.imports = ""
+  s.procs = ""
+  s.history = ""

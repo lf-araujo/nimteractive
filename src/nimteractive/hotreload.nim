@@ -1,42 +1,14 @@
-## Hot-reload the procs shared library via dlopen/dlsym.
-## The core binary is never restarted; only the procs .so is swapped.
+## Procs hot-reload.
+##
+## When the user re-executes a :procs block, the procs section of the session
+## buffer is replaced and the session is re-eval'd up to (but not including)
+## the history. The module graph stays warm so imports are not re-paid.
+## History is cleared because previously computed variables may depend on the
+## old proc signatures.
+##
+## This is simpler and more correct than dlopen-based swapping because the
+## procs live in the same VM context as eval blocks and can reference all
+## imported symbols without any FFI boundary.
 
-import std/[dynlib, os, tables]
-
-type
-  ProcHandle* = object
-    lib*: LibHandle
-    syms*: Table[string, pointer]
-
-var gProcs*: ProcHandle
-
-proc loadProcs*(soPath: string): tuple[ok: bool, msg: string] =
-  ## dlclose old .so (if loaded), dlopen new one, rebuild symbol table.
-  if gProcs.lib != nil:
-    unloadLib(gProcs.lib)
-    gProcs.lib = nil
-    gProcs.syms.clear()
-
-  if not fileExists(soPath):
-    return (false, "procs .so not found: " & soPath)
-
-  let lib = loadLib(soPath)
-  if lib == nil:
-    return (false, "dlopen failed for: " & soPath)
-
-  gProcs.lib = lib
-  # Symbol discovery: the .so exports a NimMain and whatever the user defined.
-  # Specific procs are looked up on-demand via symAddr below.
-  return (true, "")
-
-proc symAddr*(name: string): pointer =
-  ## Look up a symbol from the loaded procs .so.
-  if gProcs.lib == nil: return nil
-  if name in gProcs.syms: return gProcs.syms[name]
-  let p = gProcs.lib.symAddr(name)
-  if p != nil:
-    gProcs.syms[name] = p
-  result = p
-
-proc procsLoaded*(): bool =
-  gProcs.lib != nil
+import nimteractive/session
+export session.setProcs

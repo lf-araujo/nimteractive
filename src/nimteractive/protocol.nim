@@ -1,7 +1,7 @@
 ## JSON protocol types and I/O for the nimteractive server.
 ## All messages are single-line JSON terminated by newline.
 
-import std/[json, options]
+import std/json
 
 type
   OpKind* = enum
@@ -28,21 +28,17 @@ type
 
   Response* = object
     id*: string
-    case kind*: ResponseKind
-    of rkResult:
-      stdout*: string
-      value*: string
-    of rkError:
-      msg*: string
-    of rkCompiling:
-      discard
-    of rkReady:
-      cacheHit*: bool
-      elapsedMs*: int
-    of rkReloaded:
-      elapsedMs*: int
-    of rkCompletions:
-      items*: seq[string]
+    kind*: ResponseKind
+    # rkResult
+    stdout*: string
+    value*: string
+    # rkError
+    msg*: string
+    # rkReady / rkReloaded
+    cacheHit*: bool
+    elapsedMs*: int
+    # rkCompletions
+    items*: seq[string]
 
 proc parseRequest*(line: string): Request =
   let j = parseJson(line)
@@ -66,8 +62,7 @@ proc parseRequest*(line: string): Request =
     raise newException(ValueError, "unknown op: " & op)
 
 proc toJson*(r: Response): JsonNode =
-  result = newJObject()
-  result["id"] = %r.id
+  result = %* {"id": r.id}
   case r.kind
   of rkResult:
     result["op"] = %"result"
