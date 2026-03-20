@@ -157,8 +157,13 @@
                                 (ob-nimteractive--resp-to-display resp))))
               (error
                (setq display (concat display line "\n"))))
-          ;; Not JSON (e.g. the bare prompt "nim> ") — pass through as-is
+          ;; Not JSON — pass through as-is
           (setq display (concat display line "\n")))))
+    ;; The prompt has no trailing newline so it never matches the \n loop above.
+    ;; Flush it directly when pending output is exactly the prompt string.
+    (when (string= ob-nimteractive--pending-output ob-nimteractive-prompt)
+      (setq display (concat display ob-nimteractive--pending-output))
+      (setq ob-nimteractive--pending-output ""))
     display))
 
 (defun ob-nimteractive--resp-to-display (resp)
