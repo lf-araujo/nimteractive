@@ -44,10 +44,19 @@ proc makeInterpreter(searchPaths: seq[string]): Interpreter =
         # preventing errInternal from calling quit even for fatal msgs.
         config.structuredErrorHook = nil)
 
+proc nimblePkgPaths(): seq[string] =
+  for base in [expandTilde("~/.nimble/pkgs2"), expandTilde("~/.nimble/pkgs")]:
+    if dirExists(base):
+      for kind, path in walkDir(base):
+        if kind == pcDir:
+          result.add(path)
+      return
+
 proc newSession*(extraPaths: seq[string] = @[]): Session =
   result = Session()
   let stdlib = nimStdlibPath()
-  result.searchPaths = @[stdlib, stdlib / "pure", stdlib / "core"] & extraPaths
+  result.searchPaths = @[stdlib, stdlib / "pure", stdlib / "core"] &
+                       nimblePkgPaths() & extraPaths
   result.intr = makeInterpreter(result.searchPaths)
 
 proc initGlobalSession*(extraPaths: seq[string] = @[]) =

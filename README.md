@@ -80,8 +80,7 @@ Three block types, selected by header arguments:
 
 ```org
 #+begin_src nim :session analysis :precompile t
-import datamancer
-import fastsem
+import strutils
 #+end_src
 ```
 
@@ -91,10 +90,8 @@ Output: `[session ready — 4200ms]` on first run, `[session ready — 80ms, cac
 
 ```org
 #+begin_src nim :session analysis :procs t
-proc normalize(df: DataFrame, col: string): DataFrame =
-  let mu = df[col].mean
-  let sd = df[col].std
-  result = df.mutate(col, (c: float) => (c - mu) / sd)
+proc shout(s: string): string =
+  s.toUpperAscii & "!"
 #+end_src
 ```
 
@@ -102,9 +99,8 @@ proc normalize(df: DataFrame, col: string): DataFrame =
 
 ```org
 #+begin_src nim :session analysis
-let df = readCsv("data.csv")
-let clean = df.normalize("score")
-echo clean.head(5)
+let msg = shout("hello, nim")
+echo msg
 #+end_src
 ```
 
@@ -155,11 +151,11 @@ The server communicates over stdin/stdout using line-delimited JSON. You can dri
 → {"op": "eval",       "id": "1", "code": "echo 1+1"}
 ← {"op": "result",     "id": "1", "stdout": "2\n", "value": ""}
 
-→ {"op": "precompile", "id": "2", "imports": ["datamancer"]}
+→ {"op": "precompile", "id": "2", "imports": ["strutils"]}
 ← {"op": "compiling",  "id": "2"}
 ← {"op": "ready",      "id": "2", "cache_hit": false, "elapsed_ms": 4200}
 
-→ {"op": "load_procs", "id": "3", "code": "proc double(n: int): int = n * 2"}
+→ {"op": "load_procs", "id": "3", "code": "proc shout(s: string): string = s.toUpperAscii & \"!\""}
 ← {"op": "compiling",  "id": "3"}
 ← {"op": "reloaded",   "id": "3", "elapsed_ms": 1100}
 
