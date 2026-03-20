@@ -4,7 +4,7 @@ author        = "Luis"
 description   = "Persistent warm Nim session for interactive use from Emacs and Jupyter"
 license       = "MIT"
 srcDir        = "src"
-bin           = ["nimteractive"]
+bin           = @["nimteractive"]
 
 # Dependencies
-requires "nim >= 2.0.0"
+requires "nim >= 2.2.0"

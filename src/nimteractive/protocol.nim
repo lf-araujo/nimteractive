@@ -9,6 +9,7 @@ type
     opPrecompile = "precompile"
     opLoadProcs = "load_procs"
     opComplete = "complete"
+    opExit = "exit"
 
   Request* = object
     id*: string
@@ -22,6 +23,8 @@ type
     of opComplete:
       completeCode*: string
       cursor*: int
+    of opExit:
+      discard
 
   ResponseKind* = enum
     rkResult, rkError, rkCompiling, rkReady, rkReloaded, rkCompletions
@@ -58,6 +61,8 @@ proc parseRequest*(line: string): Request =
     result = Request(op: opComplete, id: id,
                      completeCode: j["code"].getStr,
                      cursor: j["cursor"].getInt)
+  of "exit":
+    result = Request(op: opExit, id: id)
   else:
     raise newException(ValueError, "unknown op: " & op)
 

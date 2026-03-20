@@ -44,7 +44,9 @@
   :group 'org-babel
   :prefix "ob-nimteractive-")
 
-(defcustom ob-nimteractive-binary "nimteractive"
+(defcustom ob-nimteractive-binary
+  (or (executable-find "nimteractive")
+      (expand-file-name "~/.nimble/bin/nimteractive"))
   "Path to the nimteractive server binary."
   :type 'string
   :group 'ob-nimteractive)
@@ -277,8 +279,20 @@ With prefix arg, prompt for the session name."
       (cdr (assq :session params)))))
 
 ;;;###autoload
+(defun ob-nimteractive-exit-session (&optional session)
+  "Send an exit request to SESSION, letting the server shut down cleanly."
+  (interactive
+   (list (read-string "Session to exit: " "default")))
+  (let ((proc (gethash (or session "default") ob-nimteractive--sessions)))
+    (when (process-live-p proc)
+      (condition-case _err
+          (ob-nimteractive--send-request proc '((op . "exit")))
+        (error nil)))
+    (remhash (or session "default") ob-nimteractive--sessions)))
+
+;;;###autoload
 (defun ob-nimteractive-kill-session (&optional session)
-  "Kill the nimteractive session process for SESSION."
+  "Kill the nimteractive session process for SESSION (hard kill)."
   (interactive
    (list (read-string "Session to kill: " "default")))
   (let ((proc (gethash (or session "default")

@@ -44,6 +44,11 @@ proc handleComplete(req: Request) =
   # Placeholder — symbol completion from module graph is a future feature
   send Response(id: req.id, kind: rkCompletions, items: @[])
 
+proc handleExit(req: Request) =
+  send Response(id: req.id, kind: rkResult, stdout: "bye", value: "")
+  stdout.flushFile()
+  quit(0)
+
 const Prompt = "nim> "
 
 proc sendPrompt() =
@@ -63,6 +68,7 @@ proc main() =
       of opLoadProcs:  handleLoadProcs(req)
       of opEval:       handleEval(req)
       of opComplete:   handleComplete(req)
+      of opExit:       handleExit(req)
     except:
       send Response(id: "?", kind: rkError, msg: getCurrentExceptionMsg())
     sendPrompt()

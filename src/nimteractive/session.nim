@@ -1,38 +1,54 @@
 ## VM session: persistent Interpreter with growing script buffer.
 ##
-## State is accumulated by replaying an ever-growing script on each eval.
-## Imported modules are cached in the module graph, so only the incremental
-## AST-walk cost is paid after the first import.
-##
-## Buffer structure:
-##   [imports]  <- from :precompile chunk, never cleared
-##   [procs]    <- from most recent :procs chunk, replaced on reload
-##   [history]  <- eval blocks appended sequentially
+## Error handling: msgs.nim calls quit(1) via two paths:
+##   1. fatalMsgs                      → line 432-433
+##   2. eh == doAbort AND cmd != cmdIdeTools → line 446-447
+## Both are bypassed when conf.cmd == cmdIdeTools (msgs.nim:432,446).
+## Setting conf.cmd = cmdIdeTools inside the error hook prevents both.
+## conf.errorMax = high(int) is belt-and-suspenders for the errorMax path.
+## After the hook fires, evalScript returns normally; we recreate the
+## interpreter to clear its partial state before the next eval.
 
-import compiler/[nimeval, llstream]
+import compiler/[nimeval, llstream, lineinfos, options]
 import std/[os, posix, strutils]
 
 type
   Session* = ref object
     intr*: Interpreter
     searchPaths: seq[string]
-    imports: string   ## precompile chunk content
-    procs: string     ## most recent procs chunk content
-    history: string   ## accumulated eval blocks
-    outputBaseline: int  ## byte length of output produced by history so far
+    imports: string
+    procs: string
+    history: string
+    outputBaseline: int
 
 var gSession*: Session
+var gEvalError {.threadvar.}: string
 
 proc nimStdlibPath*(): string =
-  ## Runtime stdlib path from `nim dump`.
-  ## Falls back to compile-time querySetting if dump fails.
   result = findNimStdLibCompileTime()
+
+proc makeInterpreter(searchPaths: seq[string]): Interpreter =
+  result = createInterpreter("session.nims", searchPaths)
+  result.registerErrorHook(
+    proc(config: ConfigRef; info: TLineInfo; msg: string; sev: Severity) {.gcsafe.} =
+      # config.m.errorOutputs == {} when inside a compiles() context
+      # (semexprs.nim sets it to {} to silence probe errors).
+      # Ignore those — they are expected "does this compile?" failures.
+      if sev == Severity.Error and gEvalError == "" and
+          config.m.errorOutputs != {}:
+        config.cmd = cmdIdeTools   # msgs.nim:446 — skips doAbort quit
+        config.errorMax = high(int) # msgs.nim:445 — skips errorMax quit
+        gEvalError = msg
+        # msgs.nim:632 — internalErrorImpl returns early when
+        # cmd==cmdIdeTools AND structuredErrorHook==nil,
+        # preventing errInternal from calling quit even for fatal msgs.
+        config.structuredErrorHook = nil)
 
 proc newSession*(extraPaths: seq[string] = @[]): Session =
   result = Session()
   let stdlib = nimStdlibPath()
   result.searchPaths = @[stdlib, stdlib / "pure", stdlib / "core"] & extraPaths
-  result.intr = createInterpreter("session.nims", result.searchPaths)
+  result.intr = makeInterpreter(result.searchPaths)
 
 proc initGlobalSession*(extraPaths: seq[string] = @[]) =
   gSession = newSession(extraPaths)
@@ -43,8 +59,6 @@ proc fullScript(s: Session): string =
   if s.history != "": result &= "\n" & s.history
 
 proc evalRaw(s: Session, script: string): tuple[stdout: string, err: string] =
-  ## Eval script with stdout captured via dup2. Returns captured output and
-  ## any error message.
   var pipefd: array[2, cint]
   if pipe(pipefd) != 0:
     return ("", "pipe() failed")
@@ -53,11 +67,12 @@ proc evalRaw(s: Session, script: string): tuple[stdout: string, err: string] =
   discard dup2(pipefd[1], STDOUT_FILENO)
   discard close(pipefd[1])
 
-  var evalErr = ""
+  gEvalError = ""
   try:
     s.intr.evalScript(llStreamOpen(script))
   except:
-    evalErr = getCurrentExceptionMsg()
+    if gEvalError == "":
+      gEvalError = getCurrentExceptionMsg()
 
   stdout.flushFile()
   discard dup2(savedOut, STDOUT_FILENO)
@@ -68,11 +83,12 @@ proc evalRaw(s: Session, script: string): tuple[stdout: string, err: string] =
   discard close(pipefd[0])
 
   let captured = if n > 0: buf[0..<n] else: ""
-  result = (captured.strip(leading = false), evalErr)
+  if gEvalError != "":
+    # Interpreter is in a partial/tainted state after an error; rebuild it.
+    s.intr = makeInterpreter(s.searchPaths)
+  result = (captured.strip(leading = false), gEvalError)
 
 proc setImports*(s: Session; code: string): tuple[stdout: string, err: string] =
-  ## Called by :precompile chunk. Warms up the module graph.
-  ## Resets everything — imports are the new foundation.
   s.imports = code
   s.procs = ""
   s.history = ""
@@ -80,28 +96,57 @@ proc setImports*(s: Session; code: string): tuple[stdout: string, err: string] =
   result = s.evalRaw(s.imports)
 
 proc setProcs*(s: Session; code: string): tuple[stdout: string, err: string] =
-  ## Called by :procs chunk. Replaces procs, clears history.
-  ## Module graph stays warm; outputBaseline resets to 0 for the clean state.
   s.procs = code
   s.history = ""
   s.outputBaseline = 0
-  let script = s.imports & "\n" & s.procs
-  result = s.evalRaw(script)
+  result = s.evalRaw(s.imports & "\n" & s.procs)
+
+proc deltaOut(s: Session; full: string): string =
+  if full.len > s.outputBaseline: full[s.outputBaseline..^1].strip()
+  else: ""
 
 proc evalBlock*(s: Session; code: string): tuple[stdout: string, err: string] =
   ## Append to history, replay full script, return only the new output delta.
-  ## outputBaseline tracks how many bytes the previous replay produced so we
-  ## can strip the replayed output and return only what the new code emitted.
-  s.history &= "\n" & code
-  let (full, err) = s.evalRaw(s.fullScript())
-  let newOut = if full.len > s.outputBaseline: full[s.outputBaseline..^1].strip()
-               else: ""
-  s.outputBaseline = full.len
-  result = (newOut, err)
+  ## If the expression "has to be used", retry with `echo` (prints the value),
+  ## then fall back to `discard` for types with no $ operator.
+  let trimmed = code.strip()
+
+  # Attempt 1: as-is
+  block:
+    let (full, err) = s.evalRaw(s.fullScript() & "\n" & trimmed)
+    if err == "":
+      s.history &= "\n" & trimmed
+      let newOut = s.deltaOut(full)
+      s.outputBaseline = full.len
+      return (newOut, "")
+    elif "has to be used" notin err:
+      return ("", err)  # real error, don't touch history
+
+  # Attempt 2: wrap in echo — shows the value like a proper REPL
+  block:
+    let echoCode = "echo " & trimmed
+    let (full, err) = s.evalRaw(s.fullScript() & "\n" & echoCode)
+    if err == "":
+      s.history &= "\n" & echoCode
+      let newOut = s.deltaOut(full)
+      s.outputBaseline = full.len
+      return (newOut, "")
+
+  # Attempt 3: discard — for types with no $ operator
+  block:
+    let discardCode = "discard " & trimmed
+    let (full, err) = s.evalRaw(s.fullScript() & "\n" & discardCode)
+    if err == "":
+      s.history &= "\n" & discardCode
+      let newOut = s.deltaOut(full)
+      s.outputBaseline = full.len
+      return (newOut, "")
+
+  # All attempts failed — return error without touching history
+  result = ("", "error: " & trimmed)
 
 proc resetSession*(s: Session) =
-  ## Restart the interpreter entirely (clears module graph too).
-  s.intr = createInterpreter("session.nims", s.searchPaths)
+  s.intr = makeInterpreter(s.searchPaths)
   s.imports = ""
   s.procs = ""
   s.history = ""
