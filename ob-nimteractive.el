@@ -91,8 +91,10 @@
       (setq-local comint-use-prompt-regexp t)
       ;; Wrap interactive input as JSON before sending to the process
       (setq-local comint-input-sender #'ob-nimteractive--interactive-sender)
-      ;; Install output filter to translate JSON → human-readable text
-      (add-hook 'comint-output-filter-functions
+      ;; Intercept raw output before comint inserts it into the buffer.
+      ;; comint-preoutput-filter-functions uses the return value as the
+      ;; replacement string, which is what we need to swap JSON for text.
+      (add-hook 'comint-preoutput-filter-functions
                 #'ob-nimteractive--output-filter nil t)
       (setq-local ob-nimteractive--session-name session)
       (setq-local ob-nimteractive--pending-output "")
@@ -285,10 +287,18 @@ With prefix arg, prompt for the session name."
 
 ;;;###autoload
 (defun ob-nimteractive-setup ()
-  "Register nim with org-babel.  Call this in your init file."
-  (org-babel-do-load-languages
-   'org-babel-load-languages
-   (append org-babel-load-languages '((nim . t)))))
+  "Register nim with org-babel.  Call this in your init file.
+
+Avoids going through `org-babel-do-load-languages' because that
+calls (require 'ob-nim) which would fail — our file is ob-nimteractive.
+Instead we register the execute function directly and add nim to the
+load-languages list so org-babel doesn't warn about an unknown language."
+  ;; Mark nim as loaded so org-babel-do-load-languages won't try to
+  ;; (require 'ob-nim) later if the user calls it themselves.
+  (provide 'ob-nim)
+  (setq org-babel-load-languages
+        (cons '(nim . t)
+              (assq-delete-all 'nim org-babel-load-languages))))
 
 (with-eval-after-load 'org
   (define-key org-mode-map (kbd "C-c C-v z")
