@@ -83,27 +83,23 @@
   "Start a new nimteractive process for SESSION and return the process."
   (let* ((bufname (ob-nimteractive--buffer-name session))
          (buf (get-buffer-create bufname)))
-    (with-current-buffer buf
-      (unless (eq major-mode 'comint-mode)
-        (comint-mode))
-      (setq-local comint-prompt-regexp
-                  (regexp-quote ob-nimteractive-prompt))
-      (setq-local comint-use-prompt-regexp t)
-      ;; Wrap interactive input as JSON before sending to the process
-      (setq-local comint-input-sender #'ob-nimteractive--interactive-sender)
-      ;; Intercept raw output before comint inserts it into the buffer.
-      ;; comint-preoutput-filter-functions uses the return value as the
-      ;; replacement string, which is what we need to swap JSON for text.
-      (add-hook 'comint-preoutput-filter-functions
-                #'ob-nimteractive--output-filter nil t)
-      (setq-local ob-nimteractive--session-name session)
-      (setq-local ob-nimteractive--pending-output "")
-      (setq-local ob-nimteractive--last-response nil)
-      (setq-local ob-nimteractive--awaiting-id nil))
+    ;; make-comint-in-buffer calls comint-mode internally, which runs
+    ;; kill-all-local-variables.  Set up buffer-local state AFTER it returns.
     (make-comint-in-buffer
      (format "nimteractive-%s" session)
      buf
      ob-nimteractive-binary)
+    (with-current-buffer buf
+      (setq-local comint-prompt-regexp
+                  (regexp-quote ob-nimteractive-prompt))
+      (setq-local comint-use-prompt-regexp t)
+      (setq-local comint-input-sender #'ob-nimteractive--interactive-sender)
+      (setq-local ob-nimteractive--session-name session)
+      (setq-local ob-nimteractive--pending-output "")
+      (setq-local ob-nimteractive--last-response nil)
+      (setq-local ob-nimteractive--awaiting-id nil)
+      (add-hook 'comint-preoutput-filter-functions
+                #'ob-nimteractive--output-filter nil t))
     (let ((proc (get-buffer-process buf)))
       (puthash session proc ob-nimteractive--sessions)
       proc)))
