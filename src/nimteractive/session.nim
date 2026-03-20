@@ -19,6 +19,7 @@ type
     imports: string   ## precompile chunk content
     procs: string     ## most recent procs chunk content
     history: string   ## accumulated eval blocks
+    outputBaseline: int  ## byte length of output produced by history so far
 
 var gSession*: Session
 
@@ -70,25 +71,33 @@ proc evalRaw(s: Session, script: string): tuple[stdout: string, err: string] =
   result = (captured.strip(leading = false), evalErr)
 
 proc setImports*(s: Session; code: string): tuple[stdout: string, err: string] =
-  ## Called by :precompile chunk. Replaces the imports section and warms up
-  ## the module graph. Clears procs and history (fresh start after import change).
+  ## Called by :precompile chunk. Warms up the module graph.
+  ## Resets everything — imports are the new foundation.
   s.imports = code
   s.procs = ""
   s.history = ""
+  s.outputBaseline = 0
   result = s.evalRaw(s.imports)
 
 proc setProcs*(s: Session; code: string): tuple[stdout: string, err: string] =
-  ## Called by :procs chunk. Replaces the procs section and clears history.
-  ## Imports are kept; module graph stays warm.
+  ## Called by :procs chunk. Replaces procs, clears history.
+  ## Module graph stays warm; outputBaseline resets to 0 for the clean state.
   s.procs = code
   s.history = ""
+  s.outputBaseline = 0
   let script = s.imports & "\n" & s.procs
   result = s.evalRaw(script)
 
 proc evalBlock*(s: Session; code: string): tuple[stdout: string, err: string] =
-  ## Regular eval: append to history and replay the full script.
+  ## Append to history, replay full script, return only the new output delta.
+  ## outputBaseline tracks how many bytes the previous replay produced so we
+  ## can strip the replayed output and return only what the new code emitted.
   s.history &= "\n" & code
-  result = s.evalRaw(s.fullScript())
+  let (full, err) = s.evalRaw(s.fullScript())
+  let newOut = if full.len > s.outputBaseline: full[s.outputBaseline..^1].strip()
+               else: ""
+  s.outputBaseline = full.len
+  result = (newOut, err)
 
 proc resetSession*(s: Session) =
   ## Restart the interpreter entirely (clears module graph too).
@@ -96,3 +105,4 @@ proc resetSession*(s: Session) =
   s.imports = ""
   s.procs = ""
   s.history = ""
+  s.outputBaseline = 0

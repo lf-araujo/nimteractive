@@ -44,8 +44,15 @@ proc handleComplete(req: Request) =
   # Placeholder — symbol completion from module graph is a future feature
   send Response(id: req.id, kind: rkCompletions, items: @[])
 
+const Prompt = "nim> "
+
+proc sendPrompt() =
+  stdout.write("\n" & Prompt)
+  stdout.flushFile()
+
 proc main() =
   initGlobalSession()
+  sendPrompt()
   for line in stdin.lines:
     let line = line.strip()
     if line == "": continue
@@ -58,5 +65,6 @@ proc main() =
       of opComplete:   handleComplete(req)
     except:
       send Response(id: "?", kind: rkError, msg: getCurrentExceptionMsg())
+    sendPrompt()
 
 main()
