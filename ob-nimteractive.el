@@ -100,10 +100,11 @@
       (setq-local ob-nimteractive--pending-output "")
       (setq-local ob-nimteractive--last-response nil)
       (setq-local ob-nimteractive--awaiting-id nil))
-    (let ((proc (make-comint-in-buffer
-                 (format "nimteractive-%s" session)
-                 buf
-                 ob-nimteractive-binary)))
+    (make-comint-in-buffer
+     (format "nimteractive-%s" session)
+     buf
+     ob-nimteractive-binary)
+    (let ((proc (get-buffer-process buf)))
       (puthash session proc ob-nimteractive--sessions)
       proc)))
 
